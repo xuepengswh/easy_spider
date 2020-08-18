@@ -6,6 +6,9 @@ import re
 from urllib.parse import urljoin
 import MySQLdb
 import cchardet
+import json
+import configparser
+import redis
 
 def get_urlList(data):
     url_type = data["url_type"]
@@ -42,48 +45,16 @@ def tt(data):
                 endlist.append(endUrl)
         return endlist
 
-def insert_mysql(item):
-    db = MySQLdb.connect(host="192.168.1.250", user="root", passwd="Admin@123!", db="pt_information_db", charset='utf8')
-    cursor = db.cursor()
-    tablename = "tbl_news"
-
-    TITLE = item["TITLE"]
-    CONTENT = item["CONTENT"]
-    CONTENTABSTRACT = item["CONTENTABSTRACT"]
-    LINKURL = item["LINKURL"]
-    PUBLISHTIME = item["PUBLISHTIME"]
-    FETCHTIME = item["FETCHTIME"]
-    DATASOURCE = item["DATASOURCE"]
-    TYPE = item["TYPE"]
-    EMORATE = item["EMORATE"]
-
-
-    insertsql = "INSERT INTO " + tablename + "(title,source_title,summary,thumbnail_url,module_code,org_url,org_name,source_code,source_name,source_type_code,status,exotic,important,click_num,remark,publish_time,create_time,update_time)  " \
-                                             "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)" % \
-                                                (TITLE,)
-
-    cursor.execute(insertsql)
-    db.commit()
-
-def trans(trans_json):
-    extract_recv = requests.post('http://47.93.50.159:6800/run', json=trans_json).json()
-    return extract_recv
-
-def get_summary(extract_send):
-    summary = requests.post('http://47.93.220.180:8082/summary', json={'data': extract_send}).text
-    return summary
-
-
-def get_data(data,url):
+def get_data(dataa,url):
     org_url = url   #org_url 来源网址
-    org_name = data["sourceXpath"]   #org_name   来源网址名称
-    exotic=data["exotic"]      #exotic 是否为外语   0默认是中文，1是外语
-
+    org_name = dataa["sourceXpath"]   #org_name   来源网址名称
+    exotic=dataa["exotic"]      #exotic 是否为外语   0默认是中文，1是外语
+    module_code = dataa["module_code"]
 
     ps = requests.get(url).text
     mytree = lxml.etree.HTML(ps)
 
-    source_titleXpath = data["source_titleXpath"]  # 原文标题
+    source_titleXpath = dataa["source_titleXpath"]  # 原文标题
     source_title = mytree.xpath(source_titleXpath)
     if source_title:
         source_title = source_title[0]
@@ -91,18 +62,13 @@ def get_data(data,url):
     else:
         source_title = ""
 
-    contentXpath = data["contentXpath"]
-    plist = mytree.xpath(contentXpath)  # content
-    print(contentXpath)
-    print(plist)
+    contentXpath = dataa["contentXpath"]
+    plist = mytree.xpath(contentXpath)
     content = " ".join(plist)
     source_content = content.replace("\r", " ").replace("\n", " ")  #原文内容
 
-    #title
-    #翻译后的标题
-    #target_content 翻译内容
 
-    source_htmlXpath = data["source_htmlXpath"]
+    source_htmlXpath = dataa["source_htmlXpath"]
     html_content = mytree.xpath(source_htmlXpath)  # html_content
     if html_content:
         html_content = lxml.etree.tostring(html_content[0], pretty_print=True, method='html', encoding='utf-8')
@@ -111,50 +77,39 @@ def get_data(data,url):
     else:
         source_html = ""
 
-    #summary
-    #摘要（翻译后）
-    if exotic == 0: #中文
-        title = source_title
-        target_content = source_content
-        summary = get_summary(target_content)
-    else:   #外文
-        extract_send = {
-            'title': source_title,
-            'source_content': source_content,
-            'source_html': source_html,
-            'type': 1
-        }
+    imageXpath = dataa["imageXpath"]  # thumbnail_url缩略图地址
+    image = mytree.xpath(imageXpath)
+    if image:
+        image = image[0]
+    else:
+        image = ""
 
-        trans_json = trans(extract_send)    #掉用翻译接口
-        title = trans_json["target_title"]
-        target_content = trans_json["target_content"]
-        summary = get_summary(target_content)
-
-
-
-    imageXpath = data["imageXpath"]  # thumbnail_url缩略图地址
-    dateXpath = data["dateXpath"]   # publish_time
+    dateXpath = dataa["dateXpath"]   # publish_time
+    datee = mytree.xpath(dateXpath)
+    if datee:
+        datee = datee[0]
+    else:
+        datee = ""
 
     #module_code   模块类型编码：行业资讯、产品动态、翻译学习、NLP...
             #翻译资讯,翻译学习,双语阅读,自然语言处理
-
-
     endData = {"org_url":org_url,
                "org_name":org_name,
                "exotic":exotic,
                "source_title":source_title,
                "source_content":source_content,
                "source_html":source_html,
-               "title":title,
-               "target_content":target_content,
-               "summary":summary,
+               "publish_time":datee,
+               "thumbnail_url":image,
+               "module_code":module_code,
                }
 
-    print(endData)
 
-
-
+    insert_data_to_redis(endData)
     #  默认
+    #title翻译后的标题
+    #target_content 翻译内容
+    #summary摘要（翻译后）
     #source_code    来源代码
     #source_name    来源名称
     #source_type_code   来源类型编码
@@ -165,31 +120,48 @@ def get_data(data,url):
     #create_time
     #update_time
 
-
+def insert_data_to_redis(data):
+    data = json.dumps(data)
+    print(data)
+    tempStore_url_key_name = redis_platform_address+":temporary"  # 暂时的存储
+    myRedis.lpush(tempStore_url_key_name, data)
 
 
 if __name__=="__main__":
-    data = {
-        "start_url": "http://www.yeeworld.com/article/hangye.html",
-        "second_page_value": 2,
-        # "end_page_value": 373,#################################################################################
-        "end_page_value": 5,
-        "url_type": "http://www.yeeworld.com/article/hangye/p/%d.html",
-        "lineListXpath": "//h4/../@href",
-        "source_titleXpath": "//h1/text()",
-        "contentXpath": "//div[@class='syyd_yiwen_info'][1]/p/text()|//div[@class='syyd_yiwen_info'][1]/div/p/text()",
-        "imageXpath": "//div[@class='syyd_yiwen_info'][1]/div/img/@src|//div[@class='syyd_yiwen_info'][1]/p/img/@src",
-        "sourceXpath": "译世界",
-        "dateXpath": "//div[@class='zixun_info_title'][2]/text()[3]",
-        "source_htmlXpath":"//div[@class='syyd_yiwen_info']",
-        "exotic":0,
+    #获取redis
+    configPath = "config.ini"
+    WebConfig = configparser.ConfigParser()
+    WebConfig.read(configPath, encoding='utf-8-sig')
+    redisHost = WebConfig.get("redis", "host")
+    redisPort = WebConfig.get("redis", "port")
+    redisPassword = WebConfig.get("redis", "password")
+    redisDb = WebConfig.get("redis", "database")
+    redis_platform_address = WebConfig.get("redis", "redis_platform_address")
+    myRedis = redis.Redis(host=redisHost, port=redisPort, decode_responses=True, password=redisPassword, db=redisDb)
+
+    datab = {
+    "start_url":"http://www.yeeworld.com/article/hangye.html",
+    "second_page_value":2,
+    # "end_page_value":373,  ######################################################################
+    "end_page_value": 3,
+    "url_type":"http://www.yeeworld.com/article/hangye/p/%d.html",
+    "lineListXpath":"//h4/../@href",
+    "source_titleXpath":"//h1/text()",
+    "contentXpath":"//div[@class='syyd_yiwen_info'][1]/p/text()|//div[@class='syyd_yiwen_info'][1]/div/p/text()",
+    "imageXpath":"//div[@class='syyd_yiwen_info'][1]/div/img/@src|//div[@class='syyd_yiwen_info'][1]/p/img/@src",
+    "sourceXpath":"译世界",
+    "dateXpath":"//div[@class='zixun_info_title'][2]/text()[3]",
+
+    "source_htmlXpath":"//div[@class='syyd_yiwen_info']",
+    "exotic":0,
+    "module_code":"1001",
     }
-    for url in tt(data):
-        get_data(data,url)
+
+    db = MySQLdb.connect(host="192.168.1.250", user="root", passwd="Admin@123!", db="pt_information_db", charset='utf8')
+    cursor = db.cursor()
+    for url in tt(datab):
+        get_data(datab,url)
         # try:
-        #     get_data(url)
+        #     get_data(datab,url)
         # except:
-        #     print(111111111111111111)
-
-
-
+        #     print("mysql error",111111111111111111)
