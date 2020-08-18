@@ -1,0 +1,11 @@
+有大佬知道怎么定位文书网的80t的加密位置么
+一共有两个
+我是把while（1）上面一层的function给置空了
+加密位置在某个地方
+你需要先 进入第一层
+80t咋定位呢大佬们  hook cookie eval都不太行啊
+先把缓存清掉，然后script断点打到 第一行加密，全局搜索 ret = 这个关键字，打断点，就追进二次层了。然后第二层，有一个参数大树组，里面有cookie对应下标
+你hook失败的原因是没有做检测处理
+eval.toString = function(){
+         return "function eval() { [native code] }"
+}
